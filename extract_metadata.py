@@ -3,7 +3,8 @@ Author: Rebecca
 
 Description: This script will take a list of names and extract relevant info from a metadata file
 
-Usage: python3
+Usage: python ~/scripts/python/extract_metadata.py -meta enterobase_ecoli_clermontype_meta.txt -list low_res_samples.txt -col "SRA" -fmt
+txt -out low_res_samples_clermontType.txt
 '''
 
 
@@ -15,9 +16,7 @@ import sys, os
 import textwrap
 import pandas as pd
 import argparse
-import re
 import warnings
-import numpy as np
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
 
@@ -28,14 +27,14 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 def parse_args():
     # set up command line arguments
     parser = argparse.ArgumentParser(
-        prog = extract_metadata.py,
+        prog = 'extract_metadata.py',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=textwrap.dedent('''\
             Subset data from a metadata file
             '''))
     parser.add_argument('-meta', '--meta', help='metadata file', required=True)
     parser.add_argument('-list', '--list', help='list of samples to subset', required=True)
-    parser.add_argument('-col', '--col', help='column name to match against your list', required=True)
+    parser.add_argument('-col', '--col', help='column name to match against your list, must be provided within double qoutes', required=True)
     parser.add_argument('-fmt', '--fmt', help='metadata file format, txt or csv [Default: txt]', default="txt", type=str)
     parser.add_argument('-out', '--out', help='output file', required=True)
 
@@ -77,38 +76,37 @@ def extract_meta(args):
     col_header = list(df.columns)
     df2 = pd.DataFrame(columns=col_header)
 
-    sample_list = open(sample_names, "r").read().splitlines() # sample list
+    sample_list = open(args.list, "r").read().splitlines() # sample list
 
-    # convert column into list
-
-    barcode_lst = list(df['Data Source(Accession No.;Sequencing Platform;Sequencing Library;Insert Size;Experiment;Status)'])
-
-    sra_acc_lst = []
-
-    for i in barcode_lst:
-        acc = i.split(";")[0]
-        sra_acc_lst.append(acc)
-
-    df['Accession No'] = sra_acc_lst
-
-    sample_id_lst = list(df['Sample ID'])
+    sample_id_lst = list(df[args.col])
 
     for sample in sample_list:
-        # print(sample)
         if sample in sample_id_lst:
             ## Get index from dataframe where the given value exists
-            row_index = int(df[df['Sample ID'] == sample].index.values)
+            row_index = int(df[df[args.col] == sample].index.values)
             ## select row from df
             data = df.iloc[[row_index]]
             df2 = df2.append(data)
         else:
-            continue
+            empty_dict = {}
+            for element in col_header:
+                if element == args.col:
+                    empty_dict[element] = [sample]
+                else:
+                    empty_dict[element] = ["NA"]
+            empty_df = pd.DataFrame(empty_dict)
+            df2 = pd.concat([df2, empty_df])
 
 
-    df2.to_csv(out, sep='\t', index=False)
+    df2.to_csv(args.out, sep='\t', index=False)
+
 
 ########
 # Main #
 ########
 
-extract_meta(meta_file, sample_names, out)
+if __name__ == "__main__":
+    args = parse_args()
+
+    # Call functions
+    extract_meta(args)
