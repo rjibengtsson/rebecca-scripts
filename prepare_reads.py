@@ -15,7 +15,6 @@ import argparse
 from pathlib import Path
 import subprocess
 import itertools
-import typing as t
 
 parser = argparse.ArgumentParser(
     prog = 'prepare_reads.py',
@@ -37,10 +36,9 @@ out_dir_path = args.out
 
 # create directorys
 out_dir = Path(out_dir_path)
-os.mkdir(out_dir)
 log_dir = Path(os.path.join(out_dir, "logs"))
-os.mkdir(log_dir)
-
+downsample_dir = Path(os.path.join(out_dir, "downsampled_reads"))
+final_dir = Path(os.path.join(out_dir, "final_reads"))
 
 MINIMUM_COVERAGE = 5
 MAXIMUM_COVERAGE = 200
@@ -92,11 +90,57 @@ def trim_readsets(read_1, read_2, adapter_file):
         "overwrite=t",
     ]
     bbduk_log_path = log_dir.joinpath(f"{sample_name}_bbduk.log")
+    print("Now performing trimming")
     with open(bbduk_log_path, "w", encoding="utf8") as log_file:
         subprocess.run(cmd, stderr=log_file, check=True, text=True)
     trimming_stats = extract_trimmed_stats(bbduk_log_path)
     return trimmed_1, trimmed_2, trimming_stats
 
+
+# Remove trimmed reads when finished running
+def remove_trimmed_reads(read_1, read_2):
+    trimmed_1, trimmed_2, stats = trim_readsets(read_1, read_2, adapter_file)
+    cmd = [
+        "rm",
+        f"{trimmed_1}",
+        f"{trimmed_2}",
+    ]
+    subprocess.run(cmd, shell=True)
+
+
+# find the max read length of reads
+def max_read_length(reads, max_reads: int = 200) -> int:
+    max_lines = max_reads * 4
+    with gzip.open(reads, mode="rt") as file:
+        return max(
+            len(line.rstrip()) for line in itertools.islice(file, 1, max_lines, 4)
+        )
+
+
+# count the number of reads
+def count_reads(reads) -> int:
+    line_count = 0
+    with gzip.open(reads, mode="rt") as file:
+        line_count = sum(1 for line in file)
+    assert line_count % 4 == 0
+    return line_count // 4
+
+
+# check the requirement for downsampling the number of reads
+def prepare_readset_files(read_1, read_2):
+    r1_length, r2_length = (max_read_length(reads) for reads in [read_1, read_2])
+    total_length = r1_length + r2_length
+    read_count = count_reads(read_1)
+    max_bases = BIG_GENOME * MAXIMUM_COVERAGE
+    max_reads = max_bases // total_length
+    if read_count > max_reads:
+        print("Read count exceeds maximum, now performing downsampling")
+        downsample_1, downsample_2 = downsample(read_1, read_2, max_reads)
+        r1, r2, stats = trim_readsets(downsample_1, downsample_2, adapter_file)
+    else:
+        r1, r2, stats = trim_readsets(read_1, read_2, adapter_file)
+
+    return r1, r2
 
 
 CLUMPIFY_STATS = {
@@ -121,8 +165,8 @@ def extract_dedupe_stats(dedupe_log_path) -> dict[str, int]:
 
 # Perform deduplication
 def dedupe(trimmed_1, trimmed_2):
-    dedupe_1 = out_dir.joinpath(f"{sample_name}_dedupe_1.fastq.gz")
-    dedupe_2 = out_dir.joinpath(f"{sample_name}_dedupe_2.fastq.gz")
+    dedupe_1 = final_dir.joinpath(f"{sample_name}_dedupe_1.fastq.gz")
+    dedupe_2 = final_dir.joinpath(f"{sample_name}_dedupe_2.fastq.gz")
     cmd = [
         "clumpify.sh",
         "-Xmx4g",
@@ -137,6 +181,7 @@ def dedupe(trimmed_1, trimmed_2):
 
     # print dedupe log
     dedupe_log_path = log_dir.joinpath(f"{sample_name}_dedupe.log")
+    print("Now performing deduplication")
     with open(dedupe_log_path, "w", encoding="utf8") as log_file:
         subprocess.run(cmd, stderr=log_file, check=True, text=True)
     stats = extract_dedupe_stats(dedupe_log_path)
@@ -145,10 +190,10 @@ def dedupe(trimmed_1, trimmed_2):
 
 
 
-# Perform downsampling
+# Perform downsampling if read count is too high
 def downsample(dedupe_1, dedupe_2, size_or_fraction):
-    downsample_1 = out_dir.joinpath(f"{sample_name}_downsample_1.fastq.gz")
-    downsample_2 = out_dir.joinpath(f"{sample_name}_downsample_2.fastq.gz")
+    downsample_1 = downsample_dir.joinpath(f"{sample_name}_downsample_1.fastq.gz")
+    downsample_2 = downsample_dir.joinpath(f"{sample_name}_downsample_2.fastq.gz")
     cmd1 = [
         f"seqtk sample -s 1 {dedupe_1} {size_or_fraction} | gzip - > {downsample_1}"
     ]
@@ -160,20 +205,59 @@ def downsample(dedupe_1, dedupe_2, size_or_fraction):
     return downsample_1, downsample_2
 
 
+# def remove_downsampled_reads(read_1, read_2):
+#     downsample_1, downample_2, stats = downsample(read_1, read_2, size_or_fraction)
+#     cmd = [
+#         "rm",
+#         f"{downsample_1}",
+#         f"{downsample_2}",
+#     ]
+#     subprocess.run(cmd, shell=True)
+
+
+# Perform downsampling if coverage is too high
+def _downsample(dedupe_1, dedupe_2, size_or_fraction):
+    print("Performing another round of down sampling")
+    downsample_1 = final_dir.joinpath(f"{sample_name}_downsample_1.fastq.gz")
+    downsample_2 = final_dir.joinpath(f"{sample_name}_downsample_2.fastq.gz")
+    cmd1 = [
+        f"seqtk sample -s 1 {dedupe_1} {size_or_fraction} | gzip - > {downsample_1}"
+    ]
+    subprocess.run(cmd1, shell=True)
+    cmd2 = [
+        f"seqtk sample -s 1 {dedupe_2} {size_or_fraction} | gzip - > {downsample_2}"
+    ]
+    subprocess.run(cmd2, shell=True)
+
+    #
+    # # remove old deduped files
+    # dedupe_1_old = downsample_dir.joinpath(f"{sample_name}_downsample_1.fastq.gz")
+    # dedupe_2_old = downsample_dir.joinpath(f"{sample_name}_downsample_2.fastq.gz")
+    #
+    # remove_downsampled_reads(dedupe_1_old, dedupe_2_old)
+
+    return downsample_1, downsample_2
+
+
 # Determine if reads need downsampling or not
 def maybe_downsample(trimmed_1, trimmed_2):
     deduped_1, deduped_2, number_dedupe_bases = dedupe(trimmed_1, trimmed_2)
     coverage = number_dedupe_bases / 12542403
     multiplier = TARGET_COVERAGE / coverage
     if coverage > MAXIMUM_COVERAGE:
-        return downsample(dedupe_1, deduped_2, multiplier)
+        print(f"The coverage is {coverage} and needs further downsampling")
+        return _downsample(dedupe_1, deduped_2, multiplier)
+    else:
+        print(f"The coverage is {coverage} and does not need further downsampling")
+        # return deduped_1, deduped_2
 
 
 # function to execute pipeline
-def run(read_1, read_2, adapter_file) -> None:
-    trimmed_1, trimmed_2, trimming_stats = trim_readsets(read_1, read_2, adapter_file)
-    dedupe(trimmed_1, trimmed_2)
+def run(read_1, read_2) -> None:
+    trimmed_1, trimmed_2 = prepare_readset_files(read_1, read_2)
     maybe_downsample(trimmed_1, trimmed_2)
+    # remove_trimmed_reads(trimmed_1, trimmed_2)
+
 
 # execute pipeline
-run(read_1, read_2, adapter_file)
+run(read_1, read_2)
