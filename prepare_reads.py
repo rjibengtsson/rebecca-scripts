@@ -126,6 +126,16 @@ def count_reads(reads) -> int:
     return line_count // 4
 
 
+# check equal number of forward and reverse reads
+def check_read_count(read_1, read_2):
+    r1_count = count_reads(read_1)
+    r2_count = count_reads(read_2)
+    assert r1_count == r2_count
+    if r1_count < MIN_READ_COUNT:
+        raise Rejection.insufficient_reads("Read count lower than minimum threshold")
+
+
+
 # check the requirement for downsampling the number of reads
 def prepare_readset_files(read_1, read_2):
     r1_length, r2_length = (max_read_length(reads) for reads in [read_1, read_2])
@@ -254,6 +264,7 @@ def maybe_downsample(trimmed_1, trimmed_2):
 
 # function to execute pipeline
 def run(read_1, read_2) -> None:
+    check_read_count(read_1, read_2)
     trimmed_1, trimmed_2 = prepare_readset_files(read_1, read_2)
     maybe_downsample(trimmed_1, trimmed_2)
     # remove_trimmed_reads(trimmed_1, trimmed_2)
